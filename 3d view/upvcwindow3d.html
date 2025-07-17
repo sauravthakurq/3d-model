@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Window Scene with Window-Sized Cutout and Sky Background</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: "Inter", sans-serif;
+            background-color: #f0f0f0; /* Light background for contrast */
+        }
+        #webgl-output {
+            display: block;
+            width: 100vw;
+            height: calc(100vh - 80px); /* Adjust height for buttons */
+            background-color: #e0e0e0; /* Slightly darker background for the scene */
+        }
+        .controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            padding: 1rem;
+            background-color: #f0f0f0;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+            z-index: 10;
+        }
+        .control-button {
+            background-color: #4A90E2; /* Blue */
+            color: white;
+            padding: 0.75rem 1.5rem;
+            margin: 0 0.5rem;
+            border: none;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .control-button:hover {
+            background-color: #357ABD; /* Darker blue */
+            transform: translateY(-2px);
+        }
+        .control-button:active {
+            background-color: #285A8C; /* Even darker blue */
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div id="webgl-output"></div>
+    <div class="controls">
+        <button id="closeButton" class="control-button">खिड़की बंद करें</button>
+        <button id="tiltButton" class="control-button">वेंटिलेशन के लिए झुकाएं</button>
+        <button id="turnButton" class="control-button">पूरा खोलें (सफाई के लिए)</button>
+    </div>
+
+    <script>
+        // Global variables for Three.js scene
+        let scene, camera, renderer, controls;
+        let windowPane, frameGroup, handleGroup; // Groups for the movable pane, static frame, and handle
+        let wallGroup; // Group for the wall sections
+
+        // Window dimensions (in meters for realism, approx 4x2 feet)
+        const WINDOW_WIDTH = 1.2; // ~3.94 feet
+        const WINDOW_HEIGHT = 0.6; // ~1.97 feet
+        const FRAME_THICKNESS = 0.08; // uPVC frame thickness
+        const GLASS_THICKNESS = 0.008; // 8mm glass
+
+        // Outer frame dimensions (derived from window dimensions)
+        const outerFrameWidth = WINDOW_WIDTH;
+        const outerFrameHeight = WINDOW_HEIGHT;
+
+        // Animation state management
+        let windowState = 0; // 0: Closed, 1: Tilted, 2: Turned
+
+        // Initialize the scene
+        function init() {
+            // Scene setup
+            scene = new THREE.Scene();
+            // Set the background to a plain blue color (sky)
+            scene.background = new THREE.Color(0x87CEEB); // Sky Blue
+
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / (window.innerHeight - 80), 0.1, 1000);
+            camera.position.set(1.5, 0.7, 2.5); // Position to view the window from a good angle
+            camera.lookAt(0, 0, 0);
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight - 80);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true; // Enable shadows
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Soft shadows
+            document.getElementById('webgl-output').appendChild(renderer.domElement);
+
+            // OrbitControls for camera interaction
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Smooth camera movement
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false; // Prevent panning in screen space
+            controls.maxPolarAngle = Math.PI / 2; // Limit vertical rotation
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 2); // Soft ambient light
+            scene.add(ambientLight);
+
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 1.5); // Main light
+            directionalLight1.position.set(5, 5, 5);
+            directionalLight1.castShadow = true; // Enable shadow casting for this light
+            directionalLight1.shadow.mapSize.width = 1024; // Shadow map resolution
+            directionalLight1.shadow.mapSize.height = 1024;
+            directionalLight1.shadow.camera.near = 0.5; // Frustum for shadow camera
+            directionalLight1.shadow.camera.far = 50;
+            directionalLight1.shadow.camera.left = -5;
+            directionalLight1.shadow.camera.right = 5;
+            directionalLight1.shadow.camera.top = 5;
+            directionalLight1.shadow.camera.bottom = -5;
+            scene.add(directionalLight1);
+
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 1); // Secondary light
+            directionalLight2.position.set(-5, -5, -5).normalize();
+            scene.add(directionalLight2);
+
+            const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5); // Natural ambient light
+            scene.add(hemisphereLight);
+
+            // Environment map for reflections (skybox - still used for glass reflections but not as background)
+            const cubeTextureLoader = new THREE.CubeTextureLoader();
+            const cubeTexture = cubeTextureLoader.load([
+                'https://threejs.org/examples/textures/cube/Bridge2/posx.jpg', // Right
+                'https://threejs.org/examples/textures/cube/Bridge2/negx.jpg', // Left
+                'https://threejs.org/examples/textures/cube/Bridge2/posy.jpg', // Top
+                'https://threejs.org/examples/textures/cube/Bridge2/negy.jpg', // Bottom
+                'https://threejs.org/examples/textures/cube/Bridge2/posz.jpg', // Front
+                'https://threejs.org/examples/textures/cube/Bridge2/negz.jpg'  // Back
+            ]);
+            // scene.background = cubeTexture; // Removed this line as requested for a solid blue background
+
+            // Materials
+            const upvcMaterial = new THREE.MeshStandardMaterial({
+                color: 0xFFFFFF, // White uPVC
+                roughness: 0.4, // Smoother matte finish
+                metalness: 0.05,
+                side: THREE.DoubleSide
+            });
+
+            const glassMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0xA0B0C0, // Blue-gray tint for transparent glass
+                transparent: true,
+                opacity: 0.3, // Slightly more opaque to make it visible
+                roughness: 0.15, // Slight dust reflections
+                metalness: 0.1, // Slight metallic reflection
+                transmission: 0.95, // Allows light to pass through
+                thickness: GLASS_THICKNESS, // Actual thickness for physical material
+                ior: 1.52, // Index of refraction for glass
+                envMap: cubeTexture, // Apply environment map for reflections
+                envMapIntensity: 0.5 // Intensity of reflections
+            });
+
+            const metalMaterial = new THREE.MeshStandardMaterial({
+                color: 0xAAAAAA, // Silver/Matte Steel
+                roughness: 0.3,
+                metalness: 0.8
+            });
+
+            const handleMaterial = new THREE.MeshStandardMaterial({
+                color: 0x888888, // Matte Silver/Brushed Chrome
+                roughness: 0.4,
+                metalness: 0.6
+            });
+
+            const gasketMaterial = new THREE.MeshStandardMaterial({
+                color: 0x1A1A1A, // Black rubber
+                roughness: 0.6, // Soft shine
+                metalness: 0
+            });
+
+            // Create the main window structure
+            createWindow(upvcMaterial, glassMaterial, metalMaterial, handleMaterial, gasketMaterial);
+            createWallWithCutout(); // Call the new wall creation function
+
+            // Event listeners for buttons
+            document.getElementById('closeButton').addEventListener('click', closeWindow);
+            document.getElementById('tiltButton').addEventListener('click', tiltWindow);
+            document.getElementById('turnButton').addEventListener('click', turnWindow);
+
+            // Handle window resizing
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function createWallWithCutout() {
+            wallGroup = new THREE.Group();
+            scene.add(wallGroup);
+
+            const wallDepth = FRAME_THICKNESS * 2; // Thickness of the wall
+            const wallBorderThickness = 0.5; // Thickness of the wall frame around the window
+
+            const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xFFFFFF, roughness: 0.7, metalness: 0.1 }); // Plain white wall
+
+            // Top wall section
+            const wallTop = new THREE.Mesh(
+                new THREE.BoxGeometry(WINDOW_WIDTH + 2 * wallBorderThickness, wallBorderThickness, wallDepth),
+                wallMaterial
+            );
+            wallTop.position.set(0, WINDOW_HEIGHT / 2 + wallBorderThickness / 2, -wallDepth / 2);
+            wallTop.receiveShadow = true;
+            wallGroup.add(wallTop);
+
+            // Bottom wall section
+            const wallBottom = new THREE.Mesh(
+                new THREE.BoxGeometry(WINDOW_WIDTH + 2 * wallBorderThickness, wallBorderThickness, wallDepth),
+                wallMaterial
+            );
+            wallBottom.position.set(0, -WINDOW_HEIGHT / 2 - wallBorderThickness / 2, -wallDepth / 2);
+            wallBottom.receiveShadow = true;
+            wallGroup.add(wallBottom);
+
+            // Left wall section
+            const wallLeft = new THREE.Mesh(
+                new THREE.BoxGeometry(wallBorderThickness, WINDOW_HEIGHT, wallDepth),
+                wallMaterial
+            );
+            wallLeft.position.set(-WINDOW_WIDTH / 2 - wallBorderThickness / 2, 0, -wallDepth / 2);
+            wallLeft.receiveShadow = true;
+            wallGroup.add(wallLeft);
+
+            // Right wall section
+            const wallRight = new THREE.Mesh(
+                new THREE.BoxGeometry(wallBorderThickness, WINDOW_HEIGHT, wallDepth),
+                wallMaterial
+            );
+            wallRight.position.set(WINDOW_WIDTH / 2 + wallBorderThickness / 2, 0, -wallDepth / 2);
+            wallRight.receiveShadow = true;
+            wallGroup.add(wallRight);
+        }
+
+
+        function createWindow(upvcMaterial, glassMaterial, metalMaterial, handleMaterial, gasketMaterial) {
+            // Outer fixed frame (single track frame)
+            frameGroup = new THREE.Group();
+            scene.add(frameGroup);
+
+            // Dimensions for frame components
+            const frameDepth = FRAME_THICKNESS;
+            const innerChannelDepth = FRAME_THICKNESS * 0.4; // Depth of the L-shaped channel
+            const innerCavityDepth = FRAME_THICKNESS * 0.6; // Depth of the internal cavity
+
+            // Function to create a detailed frame segment (L-channel and cavity)
+            function createDetailedFrameSegment(length, isHorizontal) {
+                const segmentGroup = new THREE.Group();
+
+                // Main outer part of the frame
+                const mainPart = new THREE.Mesh(
+                    isHorizontal ? new THREE.BoxGeometry(length, FRAME_THICKNESS, frameDepth) : new THREE.BoxGeometry(FRAME_THICKNESS, length, frameDepth),
+                    upvcMaterial
+                );
+                mainPart.castShadow = true;
+                mainPart.receiveShadow = true;
+                segmentGroup.add(mainPart);
+
+                // L-shaped channel (where glass sits)
+                const lChannelThickness = FRAME_THICKNESS * 0.15;
+                const lChannelOffset = frameDepth / 2 - lChannelThickness / 2;
+
+                const lChannelVertical = new THREE.Mesh(
+                    isHorizontal ? new THREE.BoxGeometry(length, lChannelThickness, innerChannelDepth) : new THREE.BoxGeometry(lChannelThickness, length, innerChannelDepth),
+                    upvcMaterial
+                );
+                lChannelVertical.position.z = lChannelOffset;
+                if (isHorizontal) lChannelVertical.position.y = FRAME_THICKNESS / 2 - lChannelThickness / 2;
+                else lChannelVertical.position.x = FRAME_THICKNESS / 2 - lChannelThickness / 2;
+                lChannelVertical.castShadow = true;
+                lChannelVertical.receiveShadow = true;
+                segmentGroup.add(lChannelVertical);
+
+                // Internal sidewall cavity (simulated by a hollowed out section)
+                const cavityWallThickness = FRAME_THICKNESS * 0.1;
+                const cavityOffset = frameDepth / 2 - cavityWallThickness / 2 - innerChannelDepth;
+
+                const cavityWall1 = new THREE.Mesh(
+                    isHorizontal ? new THREE.BoxGeometry(length, FRAME_THICKNESS - cavityWallThickness * 2, cavityWallThickness) : new THREE.BoxGeometry(cavityWallThickness, length - cavityWallThickness * 2, cavityWallThickness),
+                    upvcMaterial
+                );
+                cavityWall1.position.z = cavityOffset;
+                cavityWall1.castShadow = true;
+                cavityWall1.receiveShadow = true;
+                segmentGroup.add(cavityWall1);
+
+                return segmentGroup;
+            }
+
+            // Top frame
+            const topFrame = createDetailedFrameSegment(outerFrameWidth, true);
+            topFrame.position.set(0, outerFrameHeight / 2 - FRAME_THICKNESS / 2, 0);
+            frameGroup.add(topFrame);
+
+            // Bottom frame (with track detail)
+            const bottomFrame = createDetailedFrameSegment(outerFrameWidth, true);
+            bottomFrame.position.set(0, -outerFrameHeight / 2 + FRAME_THICKNESS / 2, 0);
+            frameGroup.add(bottomFrame);
+
+            // Add track grooves to the bottom frame
+            const trackGrooveWidth = outerFrameWidth * 0.8;
+            const trackGrooveHeight = FRAME_THICKNESS * 0.1;
+            const trackGrooveDepth = FRAME_THICKNESS * 0.05;
+            const trackGrooveOffset = FRAME_THICKNESS * 0.15;
+
+            const trackGroove1 = new THREE.Mesh(new THREE.BoxGeometry(trackGrooveWidth, trackGrooveHeight, trackGrooveDepth), upvcMaterial);
+            trackGroove1.position.set(-trackGrooveOffset, -outerFrameHeight / 2 + FRAME_THICKNESS / 2 - trackGrooveHeight / 2, FRAME_THICKNESS / 2 + trackGrooveDepth / 2);
+            trackGroove1.castShadow = true;
+            trackGroove1.receiveShadow = true;
+            frameGroup.add(trackGroove1);
+
+            const trackGroove2 = new THREE.Mesh(new THREE.BoxGeometry(trackGrooveWidth, trackGrooveHeight, trackGrooveDepth), upvcMaterial);
+            trackGroove2.position.set(trackGrooveOffset, -outerFrameHeight / 2 + FRAME_THICKNESS / 2 - trackGrooveHeight / 2, FRAME_THICKNESS / 2 + trackGrooveDepth / 2);
+            trackGroove2.castShadow = true;
+            trackGroove2.receiveShadow = true;
+            frameGroup.add(trackGroove2);
+
+            // Add metallic runners on base rail
+            const runnerWidth = trackGrooveWidth * 0.9;
+            const runnerHeight = 0.005;
+            const runnerDepth = 0.01;
+            const runnerOffset = trackGrooveOffset;
+
+            const runnerMaterial = new THREE.MeshStandardMaterial({ color: 0xCCCCCC, roughness: 0.2, metalness: 0.9 });
+            const runner1 = new THREE.Mesh(new THREE.BoxGeometry(runnerWidth, runnerHeight, runnerDepth), runnerMaterial);
+            runner1.position.set(-runnerOffset, -outerFrameHeight / 2 + FRAME_THICKNESS / 2 - trackGrooveHeight - runnerHeight / 2, FRAME_THICKNESS / 2 + trackGrooveDepth + runnerDepth / 2);
+            runner1.castShadow = true;
+            runner1.receiveShadow = true;
+            frameGroup.add(runner1);
+
+            const runner2 = new THREE.Mesh(new THREE.BoxGeometry(runnerWidth, runnerHeight, runnerDepth), runnerMaterial);
+            runner2.position.set(runnerOffset, -outerFrameHeight / 2 + FRAME_THICKNESS / 2 - trackGrooveHeight - runnerHeight / 2, FRAME_THICKNESS / 2 + trackGrooveDepth + runnerDepth / 2);
+            runner2.castShadow = true;
+            runner2.receiveShadow = true;
+            frameGroup.add(runner2);
+
+
+            // Left frame
+            const leftFrame = createDetailedFrameSegment(outerFrameHeight - FRAME_THICKNESS, false);
+            leftFrame.position.set(-outerFrameWidth / 2 + FRAME_THICKNESS / 2, 0, 0);
+            frameGroup.add(leftFrame);
+
+            // Right frame
+            const rightFrame = createDetailedFrameSegment(outerFrameHeight - FRAME_THICKNESS, false);
+            rightFrame.position.set(outerFrameWidth / 2 - FRAME_THICKNESS / 2, 0, 0);
+            frameGroup.add(rightFrame);
+
+            // Add screw caps to outer frame (example on top frame)
+            const screwCapGeometry = new THREE.CylinderGeometry(0.005, 0.005, 0.002, 8);
+            const screwCapMaterial = new THREE.MeshStandardMaterial({ color: 0xBBBBBB, roughness: 0.5, metalness: 0.1 });
+
+            const numScrewCaps = 3;
+            for (let i = 0; i < numScrewCaps; i++) {
+                const screwCap = new THREE.Mesh(screwCapGeometry, screwCapMaterial);
+                screwCap.position.set(
+                    -outerFrameWidth / 2 + FRAME_THICKNESS + (outerFrameWidth - FRAME_THICKNESS * 2) / (numScrewCaps - 1) * i,
+                    outerFrameHeight / 2 - FRAME_THICKNESS / 2,
+                    frameDepth / 2 + 0.001
+                );
+                screwCap.rotation.x = Math.PI / 2; // Orient flat
+                screwCap.castShadow = true;
+                screwCap.receiveShadow = true;
+                frameGroup.add(screwCap);
+            }
+
+
+            // --- Movable Window Pane (Tilt & Turn) ---
+            windowPane = new THREE.Group();
+            frameGroup.add(windowPane); // Add pane to frame group to keep them together
+
+            const paneWidth = WINDOW_WIDTH - FRAME_THICKNESS * 2;
+            const paneHeight = WINDOW_HEIGHT - FRAME_THICKNESS * 2;
+            const innerFrameThickness = FRAME_THICKNESS / 2; // Thinner inner frame
+            const innerFrameDepth = FRAME_THICKNESS;
+
+            // Pane frame (inner frame of the movable part)
+            // Top inner frame
+            const innerTop = new THREE.Mesh(new THREE.BoxGeometry(paneWidth, innerFrameThickness, innerFrameDepth), upvcMaterial);
+            innerTop.position.set(0, paneHeight / 2 - innerFrameThickness / 2, 0);
+            innerTop.castShadow = true;
+            innerTop.receiveShadow = true;
+            windowPane.add(innerTop);
+
+            // Bottom inner frame
+            const innerBottom = new THREE.Mesh(new THREE.BoxGeometry(paneWidth, innerFrameThickness, innerFrameDepth), upvcMaterial);
+            innerBottom.position.set(0, -paneHeight / 2 + innerFrameThickness / 2, 0);
+            innerBottom.castShadow = true;
+            innerBottom.receiveShadow = true;
+            windowPane.add(innerBottom);
+
+            // Left inner frame
+            const innerLeft = new THREE.Mesh(new THREE.BoxGeometry(innerFrameThickness, paneHeight, innerFrameDepth), upvcMaterial);
+            innerLeft.position.set(-paneWidth / 2 + innerFrameThickness / 2, 0, 0);
+            innerLeft.castShadow = true;
+            innerLeft.receiveShadow = true;
+            windowPane.add(innerLeft);
+
+            // Right inner frame
+            const innerRight = new THREE.Mesh(new THREE.BoxGeometry(innerFrameThickness, paneHeight, innerFrameDepth), upvcMaterial);
+            innerRight.position.set(paneWidth / 2 - innerFrameThickness / 2, 0, 0);
+            innerRight.castShadow = true;
+            innerRight.receiveShadow = true;
+            windowPane.add(innerRight);
+
+            // Sliding rollers on the bottom of the movable pane
+            const rollerRadius = 0.008;
+            const rollerHeight = 0.015;
+            const rollerOffset = paneWidth / 4; // Two rollers
+
+            const rollerGeometry = new THREE.CylinderGeometry(rollerRadius, rollerRadius, rollerHeight, 16);
+            const rollerMaterial = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.3, metalness: 0.7 });
+
+            const rollerLeft = new THREE.Mesh(rollerGeometry, rollerMaterial);
+            rollerLeft.position.set(-rollerOffset, -paneHeight / 2 + innerFrameThickness / 2 - rollerHeight / 2, innerFrameDepth / 2 + rollerRadius);
+            rollerLeft.rotation.x = Math.PI / 2; // Lay flat
+            rollerLeft.castShadow = true;
+            rollerLeft.receiveShadow = true;
+            windowPane.add(rollerLeft);
+
+            const rollerRight = new THREE.Mesh(rollerGeometry, rollerMaterial);
+            rollerRight.position.set(rollerOffset, -paneHeight / 2 + innerFrameThickness / 2 - rollerHeight / 2, innerFrameDepth / 2 + rollerRadius);
+            rollerRight.rotation.x = Math.PI / 2; // Lay flat
+            rollerRight.castShadow = true;
+            rollerRight.receiveShadow = true;
+            windowPane.add(rollerRight);
+
+
+            // Glass pane
+            const glassPane = new THREE.Mesh(new THREE.BoxGeometry(paneWidth - innerFrameThickness * 2, paneHeight - innerFrameThickness * 2, GLASS_THICKNESS), glassMaterial);
+            glassPane.position.set(0, 0, 0); // Centered within the inner frame
+            glassPane.castShadow = true;
+            glassPane.receiveShadow = true;
+            windowPane.add(glassPane);
+
+            // Add subtle bevels to glass edges (simulated with thin strips)
+            const bevelThickness = 0.001; // Very thin
+            const bevelMaterial = new THREE.MeshStandardMaterial({ color: 0x90A0B0, roughness: 0.2, metalness: 0.1 }); // Slightly darker glass color
+
+            // Top bevel
+            const glassBevelTop = new THREE.Mesh(new THREE.BoxGeometry(paneWidth - innerFrameThickness * 2, bevelThickness, GLASS_THICKNESS + bevelThickness), bevelMaterial);
+            glassBevelTop.position.set(0, (paneHeight - innerFrameThickness * 2) / 2 - bevelThickness / 2, 0);
+            glassBevelTop.castShadow = true;
+            glassBevelTop.receiveShadow = true;
+            glassPane.add(glassBevelTop);
+            // Bottom bevel
+            const glassBevelBottom = new THREE.Mesh(new THREE.BoxGeometry(paneWidth - innerFrameThickness * 2, bevelThickness, GLASS_THICKNESS + bevelThickness), bevelMaterial);
+            glassBevelBottom.position.set(0, -(paneHeight - innerFrameThickness * 2) / 2 + bevelThickness / 2, 0);
+            glassBevelBottom.castShadow = true;
+            glassBevelBottom.receiveShadow = true;
+            glassPane.add(glassBevelBottom);
+            // Left bevel
+            const glassBevelLeft = new THREE.Mesh(new THREE.BoxGeometry(bevelThickness, paneHeight - innerFrameThickness * 2, GLASS_THICKNESS + bevelThickness), bevelMaterial);
+            glassBevelLeft.position.set(-(paneWidth - innerFrameThickness * 2) / 2 + bevelThickness / 2, 0, 0);
+            glassBevelLeft.castShadow = true;
+            glassBevelLeft.receiveShadow = true;
+            glassPane.add(glassBevelLeft);
+            // Right bevel
+            const glassBevelRight = new THREE.Mesh(new THREE.BoxGeometry(bevelThickness, paneHeight - innerFrameThickness * 2, GLASS_THICKNESS + bevelThickness), bevelMaterial);
+            glassBevelRight.position.set((paneWidth - innerFrameThickness * 2) / 2 - bevelThickness / 2, 0, 0);
+            glassBevelRight.castShadow = true;
+            glassBevelRight.receiveShadow = true;
+            glassPane.add(glassBevelRight);
+
+
+            // Add black rubber gaskets around the glass
+            const gasketThickness = 0.003; // Thin gasket
+            const gasketOffset = GLASS_THICKNESS / 2 + gasketThickness / 2;
+
+            // Top gasket
+            const gasketTop = new THREE.Mesh(new THREE.BoxGeometry(paneWidth - innerFrameThickness * 2, gasketThickness, gasketThickness), gasketMaterial);
+            gasketTop.position.set(0, (paneHeight - innerFrameThickness * 2) / 2 - gasketThickness / 2, gasketOffset);
+            gasketTop.castShadow = true;
+            gasketTop.receiveShadow = true;
+            glassPane.add(gasketTop);
+            // Bottom gasket
+            const gasketBottom = new THREE.Mesh(new THREE.BoxGeometry(paneWidth - innerFrameThickness * 2, gasketThickness, gasketThickness), gasketMaterial);
+            gasketBottom.position.set(0, -(paneHeight - innerFrameThickness * 2) / 2 + gasketThickness / 2, gasketOffset);
+            gasketBottom.castShadow = true;
+            gasketBottom.receiveShadow = true;
+            glassPane.add(gasketBottom);
+            // Left gasket
+            const gasketLeft = new THREE.Mesh(new THREE.BoxGeometry(gasketThickness, paneHeight - innerFrameThickness * 2, gasketThickness), gasketMaterial);
+            gasketLeft.position.set(-(paneWidth - innerFrameThickness * 2) / 2 + gasketThickness / 2, 0, gasketOffset);
+            gasketLeft.castShadow = true;
+            gasketLeft.receiveShadow = true;
+            glassPane.add(gasketLeft);
+            // Right gasket
+            const gasketRight = new THREE.Mesh(new THREE.BoxGeometry(gasketThickness, paneHeight - innerFrameThickness * 2, gasketThickness), gasketMaterial);
+            gasketRight.position.set((paneWidth - innerFrameThickness * 2) / 2 - gasketThickness / 2, 0, gasketOffset);
+            gasketRight.castShadow = true;
+            gasketRight.receiveShadow = true;
+            glassPane.add(gasketRight);
+
+
+            // Add hinges and hardware
+            const hingeSize = 0.03;
+            const hingeOffset = innerFrameThickness / 2 + 0.01; // Offset from inner frame edge
+
+            // Top-hung hinges (for tilt) - two at the top
+            const hingeTopLeft = new THREE.Mesh(new THREE.BoxGeometry(hingeSize, hingeSize, hingeSize), metalMaterial);
+            hingeTopLeft.position.set(-paneWidth / 2 + hingeSize / 2 + hingeOffset, paneHeight / 2 - hingeSize / 2, innerFrameDepth / 2 + hingeSize / 2);
+            hingeTopLeft.castShadow = true;
+            hingeTopLeft.receiveShadow = true;
+            windowPane.add(hingeTopLeft);
+
+            const hingeTopRight = new THREE.Mesh(new THREE.BoxGeometry(hingeSize, hingeSize, hingeSize), metalMaterial);
+            hingeTopRight.position.set(paneWidth / 2 - hingeSize / 2 - hingeOffset, paneHeight / 2 - hingeSize / 2, innerFrameDepth / 2 + hingeSize / 2);
+            hingeTopRight.castShadow = true;
+            hingeTopRight.receiveShadow = true;
+            windowPane.add(hingeTopRight);
+
+            // Side hinges (for turn) - two on the right side
+            const hingeSideTop = new THREE.Mesh(new THREE.BoxGeometry(hingeSize, hingeSize, hingeSize), metalMaterial);
+            hingeSideTop.position.set(paneWidth / 2 - hingeSize / 2, paneHeight / 2 - hingeSize / 2 - hingeOffset, innerFrameDepth / 2 + hingeSize / 2);
+            hingeSideTop.castShadow = true;
+            hingeSideTop.receiveShadow = true;
+            windowPane.add(hingeSideTop);
+
+            const hingeSideBottom = new THREE.Mesh(new THREE.BoxGeometry(hingeSize, hingeSize, hingeSize), metalMaterial);
+            hingeSideBottom.position.set(paneWidth / 2 - hingeSize / 2, -paneHeight / 2 + hingeSize / 2 + hingeOffset, innerFrameDepth / 2 + hingeSize / 2);
+            hingeSideBottom.castShadow = true;
+            hingeSideBottom.receiveShadow = true;
+            windowPane.add(hingeSideBottom);
+
+            // Handle (on the right side)
+            handleGroup = new THREE.Group(); // Group for handle and its base/screws
+            handleGroup.position.set(paneWidth / 2 - innerFrameThickness / 2, 0, innerFrameDepth / 2 + FRAME_THICKNESS * 0.25); // Position of the handle on the pane
+            windowPane.add(handleGroup);
+
+            const handleBaseWidth = 0.02;
+            const handleBaseHeight = 0.06;
+            const handleLength = 0.1;
+            const handleRadius = 0.01;
+
+            const handleBase = new THREE.Mesh(new THREE.BoxGeometry(handleBaseWidth, handleBaseHeight, FRAME_THICKNESS * 0.5), handleMaterial);
+            handleBase.position.set(-handleBaseWidth / 2, 0, 0); // Relative to handleGroup origin
+            handleBase.castShadow = true;
+            handleBase.receiveShadow = true;
+            handleGroup.add(handleBase);
+
+            const handleLever = new THREE.Mesh(new THREE.BoxGeometry(handleLength, handleRadius * 2, handleRadius * 2), handleMaterial);
+            handleLever.position.set(-handleBaseWidth - handleLength / 2, 0, 0); // Relative to handleGroup origin
+            handleLever.castShadow = true;
+            handleLever.receiveShadow = true;
+            handleGroup.add(handleLever);
+
+            // Circular cover plate for handle
+            const coverPlateRadius = 0.03;
+            const coverPlateThickness = 0.002;
+            const coverPlate = new THREE.Mesh(new THREE.CylinderGeometry(coverPlateRadius, coverPlateRadius, coverPlateThickness, 32), handleMaterial);
+            coverPlate.position.set(-handleBaseWidth / 2, 0, FRAME_THICKNESS * 0.25 + coverPlateThickness / 2);
+            coverPlate.rotation.x = Math.PI / 2; // Orient flat
+            coverPlate.castShadow = true;
+            coverPlate.receiveShadow = true;
+            handleGroup.add(coverPlate);
+
+            // Screws on cover plate
+            const screwRadius = 0.002;
+            const screwHeight = 0.003;
+            const screwMaterial = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.5, metalness: 0.8 });
+            const screwGeometry = new THREE.CylinderGeometry(screwRadius, screwRadius, screwHeight, 8);
+
+            const screw1 = new THREE.Mesh(screwGeometry, screwMaterial);
+            screw1.position.set(coverPlateRadius * 0.6, coverPlateRadius * 0.6, FRAME_THICKNESS * 0.25 + coverPlateThickness + screwHeight / 2);
+            screw1.rotation.x = Math.PI / 2;
+            screw1.castShadow = true;
+            screw1.receiveShadow = true;
+            handleGroup.add(screw1);
+
+            const screw2 = new THREE.Mesh(screwGeometry, screwMaterial);
+            screw2.position.set(-coverPlateRadius * 0.6, coverPlateRadius * 0.6, FRAME_THICKNESS * 0.25 + coverPlateThickness + screwHeight / 2);
+            screw2.rotation.x = Math.PI / 2;
+            screw2.castShadow = true;
+            screw2.receiveShadow = true;
+            handleGroup.add(screw2);
+
+            const screw3 = new THREE.Mesh(screwGeometry, screwMaterial);
+            screw3.position.set(coverPlateRadius * 0.6, -coverPlateRadius * 0.6, FRAME_THICKNESS * 0.25 + coverPlateThickness + screwHeight / 2);
+            screw3.rotation.x = Math.PI / 2;
+            screw3.castShadow = true;
+            screw3.receiveShadow = true;
+            handleGroup.add(screw3);
+
+            const screw4 = new THREE.Mesh(screwGeometry, screwMaterial);
+            screw4.position.set(-coverPlateRadius * 0.6, -coverPlateRadius * 0.6, FRAME_THICKNESS * 0.25 + coverPlateThickness + screwHeight / 2);
+            screw4.rotation.x = Math.PI / 2;
+            screw4.castShadow = true;
+            screw4.receiveShadow = true;
+            handleGroup.add(screw4);
+
+
+            // Tilt mechanism arms (part of the frame, visible when tilted)
+            const armMaterial = metalMaterial;
+            const armLength = 0.15; // Length of the arm
+            const armWidth = 0.01;
+            const armDepth = 0.01;
+
+            tiltArmLeft = new THREE.Mesh(new THREE.BoxGeometry(armWidth, armLength, armDepth), armMaterial);
+            tiltArmRight = new THREE.Mesh(new THREE.BoxGeometry(armWidth, armLength, armDepth), armMaterial);
+
+            tiltArmLeft.castShadow = true;
+            tiltArmLeft.receiveShadow = true;
+            tiltArmRight.castShadow = true;
+            tiltArmRight.receiveShadow = true;
+
+            scene.add(tiltArmLeft);
+            scene.add(tiltArmRight);
+
+            tiltArmLeft.visible = false;
+            tiltArmRight.visible = false;
+
+            // Initial position of the window pane within the frame
+            windowPane.position.set(0, 0, 0); // Initially closed and flush
+        }
+
+        // Animation functions using GSAP
+        function closeWindow() {
+            gsap.to(windowPane.rotation, {
+                x: 0,
+                y: 0,
+                duration: 0.8,
+                ease: "power2.out"
+            });
+            gsap.to(windowPane.position, {
+                x: 0,
+                y: 0,
+                z: 0,
+                duration: 0.8,
+                ease: "power2.out",
+                onComplete: () => {
+                    tiltArmLeft.visible = false;
+                    tiltArmRight.visible = false;
+                    windowState = 0; // Set state to closed
+                }
+            });
+            gsap.to(handleGroup.rotation, { z: 0, duration: 0.5, ease: "power2.out" }); // Handle vertical
+        }
+
+        function tiltWindow() {
+            const tiltAngle = Math.PI / 12; // 15 degrees tilt
+            const paneHeight = WINDOW_HEIGHT - FRAME_THICKNESS * 2;
+            const paneWidth = WINDOW_WIDTH - FRAME_THICKNESS * 2;
+
+            gsap.to(handleGroup.rotation, { z: Math.PI / 4, duration: 0.5, ease: "power2.out" }); // Handle rotated for tilt
+
+            gsap.to(windowPane.rotation, {
+                x: tiltAngle, // Rotate around X-axis for tilt
+                y: 0,
+                duration: 0.8,
+                ease: "power2.out"
+            });
+
+            gsap.to(windowPane.position, {
+                x: 0,
+                y: (paneHeight / 2) * (1 - Math.cos(tiltAngle)), // Moves up slightly to simulate top pivot
+                z: -(paneHeight / 2) * Math.sin(tiltAngle) + (FRAME_THICKNESS / 2 - GLASS_THICKNESS / 2), // Moves inwards
+                duration: 0.8,
+                ease: "power2.out",
+                onStart: () => {
+                    tiltArmLeft.visible = true;
+                    tiltArmRight.visible = true;
+                },
+                onUpdate: () => {
+                    // Position and rotate tilt arms to connect frame to pane's bottom corners
+                    const armBaseY = -WINDOW_HEIGHT / 2 + FRAME_THICKNESS / 2; // Y position of the bottom frame
+                    const armBaseZ = FRAME_THICKNESS / 2; // Z position of the front of the frame
+                    const armOffsetFromCenter = (WINDOW_WIDTH / 2) - FRAME_THICKNESS - 0.02; // X offset for arms
+
+                    // Calculate target position for the bottom corners of the pane
+                    const paneBottomLeftWorld = new THREE.Vector3(-paneWidth / 2, -paneHeight / 2, 0);
+                    paneBottomLeftWorld.applyMatrix4(windowPane.matrixWorld); // Transform to world coordinates
+
+                    const paneBottomRightWorld = new THREE.Vector3(paneWidth / 2, -paneHeight / 2, 0);
+                    paneBottomRightWorld.applyMatrix4(windowPane.matrixWorld);
+
+                    // Position left arm
+                    tiltArmLeft.position.set(paneBottomLeftWorld.x, paneBottomLeftWorld.y, paneBottomLeftWorld.z);
+                    tiltArmLeft.lookAt(new THREE.Vector3(-armOffsetFromCenter, armBaseY, armBaseZ)); // Look at the frame pivot point
+
+                    // Position right arm
+                    tiltArmRight.position.set(paneBottomRightWorld.x, paneBottomRightWorld.y, paneBottomRightWorld.z);
+                    tiltArmRight.lookAt(new THREE.Vector3(armOffsetFromCenter, armBaseY, armBaseZ));
+                },
+                onComplete: () => {
+                    windowState = 1; // Set state to tilted
+                }
+            });
+        }
+
+        function turnWindow() {
+            const turnAngle = Math.PI / 2; // 90 degrees open
+            const paneWidth = WINDOW_WIDTH - FRAME_THICKNESS * 2;
+            const paneHeight = WINDOW_HEIGHT - FRAME_THICKNESS * 2;
+
+            gsap.to(handleGroup.rotation, { z: Math.PI / 2, duration: 0.5, ease: "power2.out" }); // Handle rotated for turn
+
+            gsap.to(windowPane.rotation, {
+                x: 0, // Reset tilt
+                y: -turnAngle, // Rotate inwards from the right
+                duration: 0.8,
+                ease: "power2.out"
+            });
+
+            gsap.to(windowPane.position, {
+                x: -(paneWidth / 2) * (1 - Math.cos(turnAngle)) + (FRAME_THICKNESS / 2 - GLASS_THICKNESS / 2), // Moves left
+                y: 0, // Reset Y position
+                z: (paneWidth / 2) * Math.sin(turnAngle) + (FRAME_THICKNESS / 2 - GLASS_THICKNESS / 2), // Moves forward
+                duration: 0.8,
+                ease: "power2.out",
+                onStart: () => {
+                    tiltArmLeft.visible = false; // Hide tilt arms when turning
+                    tiltArmRight.visible = false;
+                },
+                onComplete: () => {
+                    windowState = 2; // Set state to turned
+                }
+            });
+        }
+
+        // Handle window resize
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / (window.innerHeight - 80);
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight - 80);
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Only required if controls.enableDamping or controls.autoRotate are set to true
+            renderer.render(scene, camera);
+        }
+
+        // Start the application
+        window.onload = function() {
+            init();
+            animate();
+        };
+    </script>
+</body>
+</html>
